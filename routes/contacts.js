@@ -10,6 +10,10 @@ function normalizePhone(p) {
   return String(p || '').replace(/\D/g, '');
 }
 
+function escapeRegex(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 
 function requireAdmin(req, res, next) {
   const token = req.headers['x-admin-token'] || req.query.token || '';
@@ -33,12 +37,24 @@ router.post('/register', async (req, res) => {
     if (!name || !phone) return res.status(400).json({ error: 'MISSING_FIELDS' });
 
     const normalized = normalizePhone(phone);
-    const existing = await Contact.findOne({ phoneNorm: normalized });
-    if (existing) return res.status(409).json({ error: 'DUPLICATE_PHONE' });
+    const trimmedName = name.trim();
+
+    const existingPhone = await Contact.findOne({ phoneNorm: normalized });
+    if (existingPhone) {
+      return res.status(409).json({
+        error: 'DUPLICATE_PHONE',
+        existing: { name: existingPhone.name, registeredAt: existingPhone.registeredAt },
+      });
+    }
+
+    const existingName = await Contact.findOne({ name: { $regex: `^${escapeRegex(trimmedName)}$`, $options: 'i' } });
+    if (existingName) {
+      return res.status(409).json({ error: 'DUPLICATE_NAME' });
+    }
 
     const isAdmin = normalized === ADMIN_PHONE;
     const contact = new Contact({
-      name: name.trim(),
+      name: trimmedName,
       phone: phone.trim(),
       phoneNorm: normalized,
       isAdmin,
@@ -57,6 +73,24 @@ router.post('/register', async (req, res) => {
     if (err.code === 11000) return res.status(409).json({ error: 'DUPLICATE_PHONE' });
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+router.get('/check-phone', async (req, res) => {
+  try {
+    const phone = normalizePhone(req.query.phone || '');
+    if (!phone) return res.status(400).json({ error: 'MISSING_FIELDS' });
+    const existing = await Contact.findOne({ phoneNorm: phone });
+    res.json({ exists: !!existing, name: existing ? existing.name : null });
+  } catch { res.status(500).json({ error: 'Server error' }); }
+});
+
+router.get('/check-name', async (req, res) => {
+  try {
+    const name = String(req.query.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'MISSING_FIELDS' });
+    const existing = await Contact.findOne({ name: { $regex: `^${escapeRegex(name)}$`, $options: 'i' } });
+    res.json({ exists: !!existing });
+  } catch { res.status(500).json({ error: 'Server error' }); }
 });
 
 
@@ -80,7 +114,7 @@ router.get('/download', async (req, res) => {
       contact = await Contact.findOne({ phoneNorm: rawPhone });
     }
     if (!contact && rawName) {
-      contact = await Contact.findOne({ name: { $regex: `^${rawName}$`, $options: 'i' } });
+      contact = await Contact.findOne({ name: { $regex: `^${escapeRegex(rawName)}$`, $options: 'i' } });
     }
 
     if (!contact) {
