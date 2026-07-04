@@ -101,9 +101,9 @@ router.get('/download', async (req, res) => {
       return res.status(403).json({ error: 'NOT_READY', count, max: MAX });
     }
 
-    
     const rawPhone = String(req.query.phone || '').replace(/\D/g, '');
     const rawName  = String(req.query.name  || '').trim().toLowerCase();
+    const force    = req.query.force === '1';
 
     if (!rawPhone && !rawName) {
       return res.status(401).json({ error: 'VERIFY_REQUIRED' });
@@ -121,12 +121,41 @@ router.get('/download', async (req, res) => {
       return res.status(403).json({ error: 'NOT_REGISTERED' });
     }
 
-    const contacts = await Contact.find({}, 'name phone').lean();
+    const lastDownload = contact.lastDownloadAt;
+
+    // Si déjà téléchargé au moins une fois, vérifier s'il y a du nouveau
+    if (lastDownload && !force) {
+      const newCount = await Contact.countDocuments({ registeredAt: { $gt: lastDownload } });
+      if (newCount === 0) {
+        return res.status(200).json({
+          noNewContacts: true,
+          lastDownloadAt: lastDownload,
+          totalCount: count,
+        });
+      }
+    }
+
+    // Détermine quels contacts renvoyer : tous (1ère fois / force) ou seulement les nouveaux
+    const isFirstDownload = !lastDownload;
+    const query = (isFirstDownload || force) ? {} : { registeredAt: { $gt: lastDownload } };
+    const contacts = await Contact.find(query, 'name phone').lean();
+
     const vcf = contacts.map(c =>
       `BEGIN:VCARD\r\nVERSION:3.0\r\nFN:${c.name}\r\nTEL;TYPE=CELL:${c.phone}\r\nEND:VCARD`
     ).join('\r\n\r\n');
+
+    contact.lastDownloadAt = new Date();
+    await contact.save();
+
+    const filename = (isFirstDownload || force)
+      ? 'INCONNU_BOY_TECH_contacts.vcf'
+      : 'INCONNU_BOY_TECH_new_contacts.vcf';
+
     res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="INCONNU_BOY_TECH_contacts.vcf"');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-New-Contacts-Count', String(contacts.length));
+    res.setHeader('X-Is-Partial', String(!isFirstDownload && !force));
+    res.setHeader('Access-Control-Expose-Headers', 'X-New-Contacts-Count, X-Is-Partial');
     res.send(vcf);
   } catch { res.status(500).json({ error: 'Server error' }); }
 });
