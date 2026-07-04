@@ -27,6 +27,10 @@ const contactSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  lastDownloadAt: {
+    type: Date,
+    default: null,
+  },
 });
 
 module.exports = mongoose.model('Contact', contactSchema);
